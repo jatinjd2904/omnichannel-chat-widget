@@ -197,7 +197,7 @@ const initStartChat = async (facadeChatSDK: FacadeChatSDK, dispatch: Dispatch<IL
                 const deferInitialAuth = hasUserAuthenticated ? false : true;
                 
                 // Pass deferInitialAuth to SDK - it needs this to decide whether to call setAuthTokenProvider
-                (startChatOptionalParams as any).deferInitialAuth = deferInitialAuth;
+                startChatOptionalParams.deferInitialAuth = deferInitialAuth;
 
                 // eslint-disable-next-line no-console
                 console.info("[LCW][initStartChat] Mid-auth enabled - Auth configuration for startChat:", {

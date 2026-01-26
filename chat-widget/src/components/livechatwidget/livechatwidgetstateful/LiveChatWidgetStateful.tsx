@@ -812,6 +812,11 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
                 });
                 return;
             }
+
+            TelemetryHelper.logActionEvent(LogLevel.INFO, {
+                Event: TelemetryEvent.MidConversationAuthTokenReceived,
+                Description: "Mid-conversation auth token received via broadcast event."
+            });
             
             try {
                 console.info("[LCW][LiveChatWidgetStateful][MidConversationAuthTokenReceived] Calling facadeChatSDK.authenticateChat...");
@@ -823,6 +828,11 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
                 // Note: FacadeChatSDK.authenticateChat() broadcasts MidConversationAuthenticationSucceeded
                 // which is handled by the listener below to persist isAuthenticatedMidConversation state
             } catch (err) {
+                TelemetryHelper.logActionEvent(LogLevel.ERROR, {
+                    Event: TelemetryEvent.MidConversationAuthFailed,
+                    Description: "Mid-conversation authentication failed in widget listener.",
+                    ExceptionDetails: { message: (err as Error)?.message }
+                });
                 console.error("[LCW][LiveChatWidgetStateful][MidConversationAuthTokenReceived] authenticateChat FAILED", { 
                     error: (err as Error)?.message,
                     errorName: (err as Error)?.name
@@ -888,12 +898,10 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
         const authResetSub = BroadcastService.getMessageByEventName(BroadcastEvent.MidConversationAuthReset)
             .subscribe((msg) => {
                 const isAuthenticated = msg?.payload?.isAuthenticated;
-                const reason = msg?.payload?.reason;
                 const clearLiveChatContext = msg?.payload?.clearLiveChatContext;
 
                 console.info("[LCW][LiveChatWidgetStateful][AuthenticationReset] Event received", { 
                     isAuthenticated,
-                    reason,
                     clearLiveChatContext
                 });
 
@@ -905,9 +913,7 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
                     // Reset hasUserAuthenticated flag so on next page refresh, FacadeChatSDK
                     // will be created with isAuthenticated=false for unauthenticated flow
                     dispatch({ type: LiveChatWidgetActionType.SET_USER_AUTHENTICATED, payload: false });
-                    console.info("[LCW][LiveChatWidgetStateful][AuthenticationReset] hasUserAuthenticated set to false", {
-                        reason
-                    });
+                    console.info("[LCW][LiveChatWidgetStateful][AuthenticationReset] hasUserAuthenticated set to false");
 
                     // CRITICAL: Clear liveChatContext to prevent startChat from using old requestId/chatToken
                     // Without this, the widget would pass the old context to startChat(),

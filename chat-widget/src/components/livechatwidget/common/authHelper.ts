@@ -63,6 +63,10 @@ const handleAuthentication = async (chatSDK: OmnichannelChatSDK, chatConfig: Cha
             // For mid-auth scenarios, empty token from SDK's getAuthToken is also expected
             if (midAuthEnabled) {
                 console.info("[LCW][AuthHelper][handleAuthentication] Empty token from SDK (mid-auth: user not signed in)");
+                TelemetryHelper.logActionEvent(LogLevel.INFO, { 
+                    Event: TelemetryEvent.GetAuthTokenCalled, 
+                    Description: "Mid-auth: SDK getAuthToken returned empty; user not signed in" 
+                });
                 return { "result": true, "token": null };
             }
             
