@@ -13,7 +13,7 @@ import { createReducer } from "../../contexts/createReducer";
 import { getLiveChatWidgetContextInitialState } from "../../contexts/common/LiveChatWidgetContextInitialState";
 import { getMockChatSDKIfApplicable } from "./common/getMockChatSDKIfApplicable";
 import { isNullOrUndefined } from "../../common/utils";
-import { isPersistentChatEnabled, isMidAuthEnabled } from "./common/liveChatConfigUtils";
+import { isPersistentChatEnabled } from "./common/liveChatConfigUtils";
 import overridePropsOnMockIfApplicable from "./common/overridePropsOnMockIfApplicable";
 import { registerTelemetryLoggers } from "./common/registerTelemetryLoggers";
 
@@ -40,37 +40,22 @@ export const LiveChatWidget = (props: ILiveChatWidgetProps) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const hasAuthClientFn = !!((props.chatConfig?.LiveChatConfigAuthSettings as any)?.msdyn_javascriptclientfunction);
     const persistentChatEnabled = isPersistentChatEnabled(props.chatConfig?.LiveWSAndLiveChatEngJoin?.msdyn_conversationmode);
-    const midAuthEnabled = isMidAuthEnabled(props.chatConfig?.LiveWSAndLiveChatEngJoin?.msdyn_authenticatedsigninoptional);
-
-    // Check if user authenticated (pre-auth or mid-auth) from cached state for reconnect scenarios
-    const hasUserAuthenticated = state?.appStates?.hasUserAuthenticated === true;
 
     // isAuthenticatedChat determines if FacadeChatSDK should require authentication:
     //
-    // Note: Mid-auth and persistent chat are MUTUALLY EXCLUSIVE (cannot be enabled together in admin)
-    // 
-    // Cases:
-    // 1. Persistent chat enabled -> always authenticated (existing behavior)
-    // 2. Mid-auth DISABLED + auth settings exist -> authenticated from start (existing behavior - normal Auth)
-    // 3. Mid-auth ENABLED + NOT authenticated -> starts unauthenticated (new mid-auth behavior)
-    // 4. Mid-auth ENABLED + HAS authenticated (pre-auth or mid-auth) -> authenticated (for reconnect)
-    let isAuthenticatedChat: boolean;
-    
-    if (midAuthEnabled) {
-        // MID-AUTH SPECIFIC: Only require auth if user already authenticated or persistent chat
-        isAuthenticatedChat = persistentChatEnabled || hasUserAuthenticated;
-    } else {
-        // EXISTING BEHAVIOR (mid-auth disabled): Normal auth flow
-        isAuthenticatedChat = persistentChatEnabled || hasAuthClientFn;
-    }
+    // MID-AUTH FLOW:
+    // - getAuthToken is called with { isMidAuthEnabled: true } option (determined in authHelper)
+    //
+    // REGULAR AUTH FLOW (config-based):
+    // - Persistent chat enabled ? always authenticated
+    // - Auth settings exist ? authenticated from start
+    const isAuthenticatedChat = persistentChatEnabled || hasAuthClientFn;
 
     // Debug trace
     // eslint-disable-next-line no-console
     console.info("[LCW][LiveChatWidget] Auth Configuration:", {
         persistentChatEnabled,
-        midAuthEnabled,
         hasAuthClientFn,
-        hasUserAuthenticated,
         isAuthenticatedChat,
         hasGetAuthToken: !!props?.getAuthToken
     });

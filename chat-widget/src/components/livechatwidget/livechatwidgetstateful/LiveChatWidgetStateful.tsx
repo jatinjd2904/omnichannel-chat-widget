@@ -164,6 +164,13 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const startChat = async (props: ILiveChatWidgetProps, localState?: any) => {
+        console.info("[LCW][LiveChatWidgetStateful][startChat] TRIGGERED (useEffect auto-start path)", {
+            activeCachedChatExist,
+            hasLocalState: !!localState,
+            hideStartChatButton: state?.appStates?.hideStartChatButton,
+            conversationState: state?.appStates?.conversationState
+        });
+        
         const isReconnectTriggered = async (): Promise<boolean> => {
             if (isReconnectEnabled(props.chatConfig) === true && !isPersistentEnabled(props.chatConfig)) {
                 const noValidReconnectId = await handleChatReconnect(facadeChatSDK, props, dispatch, setAdapter, initStartChat, state);
@@ -180,11 +187,15 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
         let isChatValid = false;
         //Start a chat from cache/reconnectid
         if (activeCachedChatExist === true) {
+            console.info("[LCW][LiveChatWidgetStateful][startChat] activeCachedChatExist=true - checking token state before validation");
             dispatch({ type: LiveChatWidgetActionType.SET_CONVERSATION_STATE, payload: ConversationState.Loading });
 
+            console.info("[LCW][LiveChatWidgetStateful][startChat] Calling checkIfConversationStillValid...");
             //Check if conversation state is not in wrapup or closed state
             isChatValid = await checkIfConversationStillValid(facadeChatSDK, dispatch, state);
+            console.info("[LCW][LiveChatWidgetStateful][startChat] checkIfConversationStillValid returned:", isChatValid);
             if (isChatValid === true) {
+                console.info("[LCW][LiveChatWidgetStateful][startChat] Chat is valid - calling initStartChat");
                 const reconnectTriggered = await isReconnectTriggered();
                 if (!reconnectTriggered) {
                     await initStartChat(facadeChatSDK, dispatch, setAdapter, state, props, optionalParams);
@@ -192,6 +203,7 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
                 return;
             }
 
+            console.info("[LCW][LiveChatWidgetStateful][startChat] Chat is INVALID - broadcasting error");
             BroadcastService.postMessage({
                 eventName: BroadcastEvent.OnWidgetError,
                 payload: {
@@ -201,8 +213,13 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
         }
 
         if (isChatValid === false) {
+            console.info("[LCW][LiveChatWidgetStateful][startChat] isChatValid=false branch", {
+                hasLocalState: !!localState,
+                hideStartChatButton: state?.appStates?.hideStartChatButton
+            });
             if (localState) {
                 // adding the reconnect logic for the case when customer tries to reconnect from a new browser or InPrivate browser
+                console.info("[LCW][LiveChatWidgetStateful][startChat] Has localState - calling setPreChatAndInitiateChat");
                 const reconnectTriggered = await isReconnectTriggered();
                 if (!reconnectTriggered) {
                     const inMemoryState = executeReducer(state, { type: LiveChatWidgetActionType.GET_IN_MEMORY_STATE, payload: null });
@@ -212,9 +229,11 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
             } else {
                 // To avoid showing blank screen in popout
                 if (state?.appStates?.hideStartChatButton === false) {
+                    console.info("[LCW][LiveChatWidgetStateful][startChat] hideStartChatButton=false - CLOSING WIDGET (setting state to Closed)");
                     dispatch({ type: LiveChatWidgetActionType.SET_CONVERSATION_STATE, payload: ConversationState.Closed });
                     return;
                 }
+                console.info("[LCW][LiveChatWidgetStateful][startChat] hideStartChatButton=true - setting state to Loading");
                 dispatch({ type: LiveChatWidgetActionType.SET_CONVERSATION_STATE, payload: ConversationState.Loading });
             }
         }
@@ -853,77 +872,50 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
         };
     }, [facadeChatSDK]);
 
-    // Listen for authentication success (for reconnect support)
-    // This is broadcast by FacadeChatSDK.authenticateChat() when auth succeeds
+    // Listen for authentication success (for logging/notification)
+    // This is broadcast by FacadeChatSDK.authenticateChat() and FacadeChatSDK.startChat() when auth succeeds
     useEffect(() => {
-        console.info("[LCW][LiveChatWidgetStateful] Registering MidConversationAuthenticationSucceeded listener");
+        console.info("[LCW][LiveChatWidgetStateful] Registering MidConversationAuthenticationSucceeded listener");     
         
         const authSucceededSub = BroadcastService.getMessageByEventName(BroadcastEvent.MidConversationAuthSucceeded)
             .subscribe((msg) => {
                 const isAuthenticated = msg?.payload?.isAuthenticated;
-                const token = msg?.payload?.token;
-                const isPreChatAuth = msg?.payload?.isPreChatAuth;
+                const isReconnect = msg?.payload?.isReconnect;
 
                 console.info("[LCW][LiveChatWidgetStateful][AuthenticationSucceeded] Event received", { 
                     isAuthenticated,
-                    tokenPresent: !!token,
-                    isPreChatAuth
+                    isReconnect
                 });
 
                 if (isAuthenticated) {
-                    // Store the auth token for potential use (e.g., reconnect scenarios)
-                    if (token) {
-                        dispatch({ type: LiveChatWidgetActionType.SET_AUTHENTICATED_USER_TOKEN, payload: token });
-                        console.info("[LCW][LiveChatWidgetStateful][AuthenticationSucceeded] authenticatedUserToken stored");
-                    }
-                    
-                    // Set hasUserAuthenticated for BOTH pre-chat and mid-conversation auth
-                    // This flag is used after page refresh to determine if FacadeChatSDK should be created 
-                    // with isAuthenticated=true, which enables tokenRing() to fetch fresh tokens
-                    // 
-                    // For pre-chat auth: User authenticated before conversation started
-                    // For mid-auth: User authenticated during an active conversation
-                    // 
-                    // In both cases, after page refresh, we need FacadeChatSDK.isAuthenticated=true
-                    // so that tokenRing() will call handleAuthentication() to get a fresh token
+                    // Only store the boolean flag, NOT the token (security risk)
+                    // Token is managed internally by FacadeChatSDK
                     dispatch({ type: LiveChatWidgetActionType.SET_USER_AUTHENTICATED, payload: true });
-                    console.info("[LCW][LiveChatWidgetStateful][AuthenticationSucceeded] hasUserAuthenticated set to true", {
-                        isPreChatAuth
-                    });
+                    console.info("[LCW][LiveChatWidgetStateful][AuthenticationSucceeded] hasUserAuthenticated set to true");
                 }
             });
 
         // Listen for authentication reset (mid-auth fallback to unauthenticated)
-        // This is broadcast by FacadeChatSDK.setMidAuthUnauthenticatedState() when token is null/empty
+        // This is broadcast by FacadeChatSDK.startChat() when starting as unauthenticated
+        // 
+        // IMPORTANT: We only update the hasUserAuthenticated flag here. We do NOT clear widget state, 
+        // cache, or adapter because:
+        // 1. This broadcast happens DURING startChat(), not before it
+        // 2. The startChat() flow will naturally create a new adapter and set proper widget state
+        // 3. Clearing state here would cause a race condition
+        // 4. FacadeChatSDK has already cleared SDK internal state (chatToken, requestId, etc.)
         const authResetSub = BroadcastService.getMessageByEventName(BroadcastEvent.MidConversationAuthReset)
             .subscribe((msg) => {
                 const isAuthenticated = msg?.payload?.isAuthenticated;
-                const clearLiveChatContext = msg?.payload?.clearLiveChatContext;
 
                 console.info("[LCW][LiveChatWidgetStateful][AuthenticationReset] Event received", { 
-                    isAuthenticated,
-                    clearLiveChatContext
+                    isAuthenticated
                 });
 
                 if (isAuthenticated === false) {
-                    // Clear the auth token
-                    dispatch({ type: LiveChatWidgetActionType.SET_AUTHENTICATED_USER_TOKEN, payload: null });
-                    console.info("[LCW][LiveChatWidgetStateful][AuthenticationReset] authenticatedUserToken cleared");
-                    
-                    // Reset hasUserAuthenticated flag so on next page refresh, FacadeChatSDK
-                    // will be created with isAuthenticated=false for unauthenticated flow
+                    // Only update the boolean flag - startChat() will handle the rest
                     dispatch({ type: LiveChatWidgetActionType.SET_USER_AUTHENTICATED, payload: false });
                     console.info("[LCW][LiveChatWidgetStateful][AuthenticationReset] hasUserAuthenticated set to false");
-
-                    // CRITICAL: Clear liveChatContext to prevent startChat from using old requestId/chatToken
-                    // Without this, the widget would pass the old context to startChat(),
-                    // This would reconnect to the previous authenticated conversation instead of starting fresh
-                    if (clearLiveChatContext) {
-                        dispatch({ type: LiveChatWidgetActionType.SET_LIVE_CHAT_CONTEXT, payload: {} });
-                        dispatch({ type: LiveChatWidgetActionType.SET_RECONNECT_ID, payload: "" });
-                        dispatch({ type: LiveChatWidgetActionType.SET_CHAT_TOKEN, payload: {} });
-                        console.info("[LCW][LiveChatWidgetStateful][AuthenticationReset] liveChatContext, reconnectId, chatToken cleared");
-                    }
                 }
             });
 

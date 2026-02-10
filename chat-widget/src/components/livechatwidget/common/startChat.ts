@@ -36,6 +36,12 @@ let popoutWidgetInstanceId: any | "";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const prepareStartChat = async (props: ILiveChatWidgetProps, facadeChatSDK: FacadeChatSDK, state: ILiveChatWidgetContext, dispatch: Dispatch<ILiveChatWidgetAction>, setAdapter: any) => {
+    console.info("[LCW][startChat][prepareStartChat] TRIGGERED", {
+        conversationState: state?.appStates?.conversationState,
+        hasLiveChatContext: !!state?.domainStates?.liveChatContext,
+        hasReconnectId: !!state?.appStates?.reconnectId,
+        hideStartChatButton: state?.appStates?.hideStartChatButton
+    });
     optionalParams = {}; //Resetting to ensure no stale values
     widgetInstanceId = getWidgetCacheIdfromProps(props);
 
@@ -67,6 +73,11 @@ const prepareStartChat = async (props: ILiveChatWidgetProps, facadeChatSDK: Faca
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const setPreChatAndInitiateChat = async (facadeChatSDK: FacadeChatSDK, dispatch: Dispatch<ILiveChatWidgetAction>, setAdapter: any, isProactiveChat?: boolean | false, proactiveChatEnablePrechatState?: boolean | false, state?: ILiveChatWidgetContext, props?: ILiveChatWidgetProps) => {
+    console.info("[LCW][startChat][setPreChatAndInitiateChat] TRIGGERED", {
+        isProactiveChat,
+        proactiveChatEnablePrechatState,
+        conversationState: state?.appStates?.conversationState
+    });
 
     // This reset needs to be done before to load prechat, because the conversation state changes from close to prechat
     if (state?.appStates.conversationState === ConversationState.Closed) {
@@ -139,6 +150,12 @@ const setPreChatAndInitiateChat = async (facadeChatSDK: FacadeChatSDK, dispatch:
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const initStartChat = async (facadeChatSDK: FacadeChatSDK, dispatch: Dispatch<ILiveChatWidgetAction>, setAdapter: any, state: ILiveChatWidgetContext | undefined, props?: ILiveChatWidgetProps, params?: StartChatOptionalParams, persistedState?: any) => {
+    console.info("[LCW][startChat][initStartChat] TRIGGERED", {
+        hasLiveChatContext: !!params?.liveChatContext,
+        hasReconnectId: !!params?.reconnectId,
+        hasPersistedState: !!persistedState,
+        conversationState: state?.appStates?.conversationState
+    });
     let isStartChatSuccessful = false;
     const persistentChatEnabled = isPersistentChatEnabled(state?.domainStates?.liveChatConfig?.LiveWSAndLiveChatEngJoin?.msdyn_conversationmode);
 
@@ -181,59 +198,25 @@ const initStartChat = async (facadeChatSDK: FacadeChatSDK, dispatch: Dispatch<IL
             };
             const startChatOptionalParams: StartChatOptionalParams = Object.assign({}, params, optionalParams, defaultOptionalParams);
 
-            // Check if mid-auth is enabled in admin config
+            // MID-AUTH: Add wasAuthenticated flag for reconnect scenarios
+            // This tells FacadeChatSDK whether the previous session was authenticated
+            // Used to detect auth transitions (Auth→Unauth) and decide whether to call authenticateChat
             const midAuthEnabled = isMidAuthEnabled(state?.domainStates?.liveChatConfig?.LiveWSAndLiveChatEngJoin?.msdyn_authenticatedsigninoptional);
-            
-            // MID-AUTH SPECIFIC: Only set deferInitialAuth when mid-auth is enabled
             if (midAuthEnabled) {
                 const hasUserAuthenticated = state?.appStates?.hasUserAuthenticated === true ||
                                             persistedState?.appStates?.hasUserAuthenticated === true;
-                
-                // deferInitialAuth controls SDK behavior in internalStartChat:
-                // - true: SDK skips setAuthTokenProvider() - used for mid-auth flow
-                // - false: SDK calls setAuthTokenProvider() - used for authenticated flow
-                // 
-                // For authenticated users (pre-auth or mid-auth reconnect), this will be overridden in FacadeChatSDK
-                const deferInitialAuth = hasUserAuthenticated ? false : true;
-                
-                // Pass deferInitialAuth to SDK - it needs this to decide whether to call setAuthTokenProvider
-                startChatOptionalParams.deferInitialAuth = deferInitialAuth;
-
-                // eslint-disable-next-line no-console
-                console.info("[LCW][initStartChat] Mid-auth enabled - Auth configuration for startChat:", {
-                    midAuthEnabled,
-                    hasUserAuthenticated,
-                    deferInitialAuth,
-                    persistentChatEnabled
-                });
-
-                TelemetryHelper.logConfigDataEvent(LogLevel.INFO, {
-                    Event: TelemetryEvent.WidgetLoadStarted,
-                    Description: "Mid-auth enabled - Auth configuration for startChat.",
-                    CustomProperties: { 
-                        hasUserAuthenticated,
-                        midAuthEnabled,
-                        deferInitialAuth,
-                        persistentChatEnabled
-                    }
-                });
-            } else {
-                console.info("[LCW][initStartChat] Mid-auth disabled - using existing setup:", {
-                    midAuthEnabled,
-                    persistentChatEnabled
-                });
+                startChatOptionalParams.wasAuthenticated = hasUserAuthenticated;
+                console.info("[LCW][startChat] MID-AUTH enabled - wasAuthenticated flag set to:", hasUserAuthenticated);
             }
 
             // startTime is used to determine if a message is history or new, better to be set before creating the adapter to get bandwidth
             const startTime = (new Date().getTime());
             createTrackingForFirstMessage();
             
-            // FacadeChatSDK.startChat() will:
-            // 1. Call tokenRing() which checks if authentication is needed (based on isAuthenticated flag)
-            // 2. If isAuthenticated=true and token not set/expired, tokenRing() calls handleAuthentication()
-            // 3. handleAuthentication() uses props.getAuthToken to get a fresh token
-            // 4. Sets SDK's authenticatedUserToken directly and may override deferInitialAuth
-            // 5. For mid-auth: Passes deferInitialAuth to SDK which controls setAuthTokenProvider behavior
+            // FacadeChatSDK.startChat() handles:
+            // 1. tokenRing() - checks authentication, calls handleAuthentication() if needed
+            // 2. Mid-auth: If no token available, sets deferInitialAuth=true for unauthenticated flow
+            // 3. Mid-auth: On reconnect with valid token, calls authenticateChat endpoint to upgrade conversation
             await facadeChatSDK.startChat(startChatOptionalParams);
             logStartChatComplete();
             isStartChatSuccessful = true;
@@ -311,22 +294,33 @@ const createAdapterAndSubscribe = async (facadeChatSDK: FacadeChatSDK, dispatch:
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const canConnectToExistingChat = async (props: ILiveChatWidgetProps, facadeChatSDK: FacadeChatSDK, state: ILiveChatWidgetContext, dispatch: Dispatch<ILiveChatWidgetAction>, setAdapter: any) => {
+    console.info("[LCW][startChat][canConnectToExistingChat] TRIGGERED", {
+        hideStartChatButton: state?.appStates?.hideStartChatButton
+    });
     // By pass this function in case of popout chat
     if (state?.appStates?.hideStartChatButton === true) {
+        console.info("[LCW][startChat][canConnectToExistingChat] BYPASSED - hideStartChatButton is true");
         return false;
     }
 
     const persistedState = getStateFromCache(getWidgetCacheIdfromProps(props));
+    console.info("[LCW][startChat][canConnectToExistingChat] Checking cached state", {
+        hasPersistedState: !!persistedState,
+        hasLiveChatContext: !!persistedState?.domainStates?.liveChatContext,
+        cachedConversationState: persistedState?.appStates?.conversationState
+    });
 
     //Connect to only active chat session
     if (persistedState &&
         !isUndefinedOrEmpty(persistedState?.domainStates?.liveChatContext) &&
         persistedState?.appStates?.conversationState === ConversationState.Active) {
+        console.info("[LCW][startChat][canConnectToExistingChat] Found active cached chat - calling initStartChat DIRECTLY (no validation)");
         dispatch({ type: LiveChatWidgetActionType.SET_CONVERSATION_STATE, payload: ConversationState.Loading });
         const optionalParams = { liveChatContext: persistedState?.domainStates?.liveChatContext };
         await initStartChat(facadeChatSDK, dispatch, setAdapter, state, props, optionalParams, persistedState);
         return true;
     }
+    console.info("[LCW][startChat][canConnectToExistingChat] No valid cached chat found");
     return false;
 };
 
@@ -366,7 +360,11 @@ const setCustomContextParams = async (state: ILiveChatWidgetContext | undefined,
 };
 
 const canStartPopoutChat = async (props: ILiveChatWidgetProps) => {
+    console.info("[LCW][startChat][canStartPopoutChat] TRIGGERED", {
+        allowSdkChatSupport: props.allowSdkChatSupport
+    });
     if (props.allowSdkChatSupport === false) {
+        console.info("[LCW][startChat][canStartPopoutChat] BYPASSED - allowSdkChatSupport is false");
         return false;
     }
 
@@ -390,6 +388,10 @@ const canStartPopoutChat = async (props: ILiveChatWidgetProps) => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const checkIfConversationStillValid = async (facadeChatSDK: FacadeChatSDK, dispatch: Dispatch<ILiveChatWidgetAction>, state: ILiveChatWidgetContext): Promise<boolean> => {
+    console.info("[LCW][startChat][checkIfConversationStillValid] TRIGGERED", {
+        hasLiveChatContext: !!state?.domainStates?.liveChatContext,
+        requestId: state?.domainStates?.liveChatContext?.requestId
+    });
     const requestIdFromCache = state.domainStates?.liveChatContext?.requestId;
     const liveChatContext = state?.domainStates?.liveChatContext;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -400,9 +402,21 @@ const checkIfConversationStillValid = async (facadeChatSDK: FacadeChatSDK, dispa
 
     try {
         facadeChatSDK.getChatSDK().requestId = requestIdFromCache;
+        console.info("[LCW][startChat][checkIfConversationStillValid] Calling getConversationDetailsCall...");
         conversationDetails = await getConversationDetailsCall(facadeChatSDK, liveChatContext);
+        console.info("[LCW][startChat][checkIfConversationStillValid] getConversationDetails returned", {
+            conversationDetails,
+            hasKeys: Object.keys(conversationDetails || {}).length,
+            state: conversationDetails?.state
+        });
 
-        if (Object.keys(conversationDetails).length === 0 || isNullOrUndefined(conversationDetails.state) || conversationDetails.state === LiveWorkItemState.Closed || conversationDetails.state === LiveWorkItemState.WrapUp) {           
+        if (Object.keys(conversationDetails).length === 0 || isNullOrUndefined(conversationDetails.state) || conversationDetails.state === LiveWorkItemState.Closed || conversationDetails.state === LiveWorkItemState.WrapUp) {
+            console.info("[LCW][startChat][checkIfConversationStillValid] Conversation is INVALID - returning false", {
+                isEmpty: Object.keys(conversationDetails).length === 0,
+                noState: isNullOrUndefined(conversationDetails.state),
+                isClosed: conversationDetails.state === LiveWorkItemState.Closed,
+                isWrapUp: conversationDetails.state === LiveWorkItemState.WrapUp
+            });
             dispatch({ type: LiveChatWidgetActionType.SET_LIVE_CHAT_CONTEXT, payload: undefined });
             dispatch({ type: LiveChatWidgetActionType.SET_UNREAD_MESSAGE_COUNT, payload: 0 });
 
@@ -411,6 +425,7 @@ const checkIfConversationStillValid = async (facadeChatSDK: FacadeChatSDK, dispa
             }
             return false;
         }
+        console.info("[LCW][startChat][checkIfConversationStillValid] Conversation is VALID - returning true");
         return true;
     }
     catch (error) {

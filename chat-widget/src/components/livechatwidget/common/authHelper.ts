@@ -13,7 +13,7 @@ import { isNullOrEmptyString } from "../../../common/utils";
  */
 const isMidAuthEnabled = (chatConfig: ChatConfig | undefined): boolean => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const value = (chatConfig as any)?.LiveWSAndLiveChatEngJoin?.msdyn_authenticatedsigninoptional;
+    const value = chatConfig?.LiveWSAndLiveChatEngJoin?.msdyn_authenticatedsigninoptional;
     return value?.toString?.().toLowerCase?.() === "true";
 };
 
@@ -26,29 +26,38 @@ const getAuthClientFunction = (chatConfig: ChatConfig | undefined) => {
     return authClientFunction;
 };
 
-const handleAuthentication = async (chatSDK: OmnichannelChatSDK, chatConfig: ChatConfig | undefined, getAuthToken: ((authClientFunction?: string) => Promise<string | null>) | undefined) => {
+const handleAuthentication = async (chatSDK: OmnichannelChatSDK, chatConfig: ChatConfig | undefined, getAuthToken: ((authClientFunction?: string, options?: { isMidAuthEnabled: boolean }) => Promise<string | null>) | undefined) => {
     const midAuthEnabled = isMidAuthEnabled(chatConfig);
 
     const authClientFunction = getAuthClientFunction(chatConfig);
     if (getAuthToken && authClientFunction) {
         TelemetryHelper.logActionEvent(LogLevel.INFO, { Event: TelemetryEvent.GetAuthTokenCalled });
-        
-        const token = await getAuthToken(authClientFunction);
+
+        console.info("[LCW][AuthHelper][handleAuthentication] Calling getAuthToken:", {
+            authClientFunction,
+            isMidAuthEnabled: midAuthEnabled
+        });
+
+        // Only pass isMidAuthEnabled option when mid-auth is enabled.
+        const token = midAuthEnabled
+            ? await getAuthToken(authClientFunction, { isMidAuthEnabled: midAuthEnabled })
+            : await getAuthToken(authClientFunction);
         if (!isNullOrEmptyString(token)) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (chatSDK as any).setAuthTokenProvider(async () => {
                 return token;
             });
+            console.info("[LCW][AuthHelper][handleAuthentication] Valid JWT token received");
             return {"result": true, "token": token};
         } else {
             // For mid-auth scenarios, empty token means "user not signed in" - this is expected behavior.
             // Return result: true with empty token so caller can decide to proceed unauthenticated.
             if (midAuthEnabled) {
-                console.info("[LCW][AuthHelper][handleAuthentication] Empty token received (mid-auth: user not signed in)");
+                console.info("[LCW][AuthHelper][handleAuthentication] Empty token received from GetAuth Function (mid-auth: user not signed in)");
                 // Log as INFO, not ERROR - this is expected behavior for mid-auth
-                TelemetryHelper.logActionEvent(LogLevel.INFO, { 
-                    Event: TelemetryEvent.GetAuthTokenCalled, 
-                    Description: "Mid-auth: token provider returned empty; user not signed in" 
+                TelemetryHelper.logActionEvent(LogLevel.INFO, {
+                    Event: TelemetryEvent.GetAuthTokenCalled,
+                    Description: "Mid-auth: token provider returned empty; user not signed in"
                 });
                 return { "result": true, "token": null };
             }
@@ -69,13 +78,14 @@ const handleAuthentication = async (chatSDK: OmnichannelChatSDK, chatConfig: Cha
                 });
                 return { "result": true, "token": null };
             }
-            
+                
             TelemetryHelper.logActionEvent(LogLevel.ERROR, { Event: TelemetryEvent.ReceivedNullOrEmptyToken, Description: "getAuthToken in chat SDK returns empty string" });
             throw new Error(WidgetLoadCustomErrorString.AuthenticationFailedErrorString);
         }
         return { "result": true, token };
     }
 
+    console.info("[LCW][AuthHelper][handleAuthentication] No auth method available");
     return {
         "result": false, 
         "token": null,
