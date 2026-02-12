@@ -332,17 +332,22 @@ describe("FacadeChatSDK", () => {
             expect(mockChatSDK.reconnectId).toBeNull();
         });
 
-        it("should broadcast MidConversationAuthReset event", () => {
+        it("should clear SDK internal state (chatToken, reconnectId, requestId, sessionId, conversation)", () => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const mockChatSDK = facadeChatSDK["chatSDK"] as any;
+            mockChatSDK.chatToken = { chatId: "test-chat-id" };
+            mockChatSDK.reconnectId = "reconnect-123";
+            mockChatSDK.requestId = "request-123";
+            mockChatSDK.sessionId = "session-123";
+            mockChatSDK.conversation = { disconnect: jest.fn() };
+
             facadeChatSDK["setMidAuthUnauthenticatedState"]();
 
-            expect(BroadcastService.postMessage).toHaveBeenCalledWith({
-                eventName: BroadcastEvent.MidConversationAuthReset,
-                payload: {
-                    isAuthenticated: false,
-                    reason: "Starting new unauthenticated chat",
-                    clearLiveChatContext: true
-                }
-            });
+            expect(mockChatSDK.chatToken).toEqual({});
+            expect(mockChatSDK.reconnectId).toBeNull();
+            expect(mockChatSDK.requestId).toBeNull();
+            expect(mockChatSDK.sessionId).toBeNull();
+            expect(mockChatSDK.conversation).toBeNull();
         });
     });
 
@@ -371,26 +376,25 @@ describe("FacadeChatSDK", () => {
             expect(mockStartChat).toHaveBeenCalled();
         });
 
-        it("should set deferInitialAuth=true when pendingMidAuthUnauthenticatedState is true", async () => {
+        it("should set sdk.deferInitialAuth=true when pendingMidAuthUnauthenticatedState is true", async () => {
             facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
-            jest.spyOn(facadeChatSDK as unknown, "setMidAuthUnauthenticatedState").mockImplementation(() => {
-                facadeChatSDK["isAuthenticated"] = false;
-            });
+            facadeChatSDK["isAuthenticated"] = false;
 
             await facadeChatSDK.startChat({});
 
             expect(mockStartChat).toHaveBeenCalled();
-            const callArgs = mockStartChat.mock.calls[0][0];
-            expect(callArgs.deferInitialAuth).toBe(true);
+            // deferInitialAuth is set on the SDK instance, not on optionalParams
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.deferInitialAuth).toBe(true);
         });
 
-        it("should clear liveChatContext when pendingMidAuthUnauthenticatedState is true", async () => {
+        it("should clear liveChatContext when pendingMidAuthUnauthenticatedState is true and wasPreviousSessionAuthenticated", async () => {
             facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
-            jest.spyOn(facadeChatSDK as unknown, "setMidAuthUnauthenticatedState").mockImplementation(() => {
-                facadeChatSDK["isAuthenticated"] = false;
-            });
+            facadeChatSDK["isAuthenticated"] = false;
 
-            const optionalParams = { liveChatContext: { chatToken: {}, requestId: "123" } };
+            // Auth→Unauth transition: liveChatContext should be cleared
+            const optionalParams = { liveChatContext: { chatToken: {}, requestId: "123" }, wasAuthenticated: true };
             await facadeChatSDK.startChat(optionalParams);
 
             expect(mockStartChat).toHaveBeenCalled();
@@ -398,15 +402,14 @@ describe("FacadeChatSDK", () => {
             expect(callArgs.liveChatContext).toBeUndefined();
         });
 
-        it("should reset pendingMidAuthUnauthenticatedState after processing", async () => {
+        it("should keep pendingMidAuthUnauthenticatedState true after startChat (not reset until token obtained)", async () => {
             facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
-            jest.spyOn(facadeChatSDK as unknown, "setMidAuthUnauthenticatedState").mockImplementation(() => {
-                facadeChatSDK["isAuthenticated"] = false;
-            });
+            facadeChatSDK["isAuthenticated"] = false;
 
             await facadeChatSDK.startChat({});
 
-            expect(facadeChatSDK["pendingMidAuthUnauthenticatedState"]).toBe(false);
+            // pendingMidAuthUnauthenticatedState stays true so CASE 1 re-triggers on every startChat
+            expect(facadeChatSDK["pendingMidAuthUnauthenticatedState"]).toBe(true);
         });
 
         it("should set authenticatedUserToken on SDK when authenticated with valid token", async () => {
@@ -421,16 +424,19 @@ describe("FacadeChatSDK", () => {
             expect(chatSDK.authenticatedUserToken).toBe(jwt.token);
         });
 
-        it("should set deferInitialAuth=false when authenticated with valid token and deferInitialAuth was true", async () => {
+        it("should set sdk.deferInitialAuth=false when authenticated with valid token for new chat", async () => {
             const jwt = getJWTToken();
             facadeChatSDK["isAuthenticated"] = true;
             facadeChatSDK["token"] = jwt.token;
             facadeChatSDK["expiration"] = jwt.expiration;
 
-            await facadeChatSDK.startChat({ deferInitialAuth: true } as unknown);
+            await facadeChatSDK.startChat({});
 
-            const callArgs = mockStartChat.mock.calls[0][0];
-            expect(callArgs.deferInitialAuth).toBe(false);
+            // deferInitialAuth is set on the SDK instance, not on optionalParams
+            // For new chats with valid token, deferInitialAuth should be false
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.deferInitialAuth).toBe(false);
         });
 
         it("should not modify optionalParams when not authenticated", async () => {
@@ -504,7 +510,7 @@ describe("FacadeChatSDK", () => {
                 await expect(facadeChatSDK.authenticateChat(expiredToken)).rejects.toThrow("Authentication Setup Error: Authentication token is already expired");
             });
 
-            it("should clean up partial state on pre-chat auth failure", async () => {
+            it("should clean up token and expiration on pre-chat auth failure with empty token", async () => {
                 // Set some initial state
                 facadeChatSDK["token"] = "old-token";
                 facadeChatSDK["expiration"] = 12345;
@@ -512,9 +518,11 @@ describe("FacadeChatSDK", () => {
 
                 await expect(facadeChatSDK.authenticateChat("")).rejects.toThrow();
 
+                // Token and expiration are cleared on validation failure
                 expect(facadeChatSDK["token"]).toBe("");
                 expect(facadeChatSDK["expiration"]).toBe(0);
-                expect(facadeChatSDK["isAuthenticated"]).toBe(false);
+                // isAuthenticated is not changed by the empty-token validation path
+                // (only the catch block for SDK failures clears it for pre-chat)
             });
 
             it("should throw error when token provider throws", async () => {
@@ -830,5 +838,315 @@ describe("FacadeChatSDK", () => {
             expect(facadeChatSDK.isTokenSet()).toBe(false);
         });
     });
-    
+
+    describe("configureMidAuthState", () => {
+        it("CASE 1: should set deferInitialAuth=true and return shouldClearReconnectParams=false for Unauth→Unauth", async () => {
+            facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
+            facadeChatSDK["isAuthenticated"] = false;
+
+            const result = await facadeChatSDK["configureMidAuthState"](false, false);
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.deferInitialAuth).toBe(true);
+            // Unauth→Unauth: liveChatContext should NOT be cleared
+            expect(result.shouldClearReconnectParams).toBe(false);
+        });
+
+        it("CASE 1: should set deferInitialAuth=true and return shouldClearReconnectParams=true for Auth→Unauth", async () => {
+            facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
+            facadeChatSDK["isAuthenticated"] = false;
+
+            const result = await facadeChatSDK["configureMidAuthState"](true, true);
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.deferInitialAuth).toBe(true);
+            // Auth→Unauth: liveChatContext SHOULD be cleared
+            expect(result.shouldClearReconnectParams).toBe(true);
+        });
+
+        it("CASE 2: should call handleAuthenticatedState when token is valid and not pending unauthenticated", async () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["pendingMidAuthUnauthenticatedState"] = false;
+            facadeChatSDK["token"] = jwt.token;
+            facadeChatSDK["expiration"] = jwt.expiration;
+
+            const result = await facadeChatSDK["configureMidAuthState"](false, false);
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.authenticatedUserToken).toBe(jwt.token);
+            expect(sdk.deferInitialAuth).toBe(false);
+            expect(result.shouldClearReconnectParams).toBe(false);
+        });
+
+        it("should return shouldClearReconnectParams=false when no token and not pending unauthenticated", async () => {
+            facadeChatSDK["pendingMidAuthUnauthenticatedState"] = false;
+            facadeChatSDK["token"] = "";
+
+            const result = await facadeChatSDK["configureMidAuthState"](false, false);
+
+            expect(result.shouldClearReconnectParams).toBe(false);
+        });
+    });
+
+    describe("handlePendingUnauthenticatedState", () => {
+        it("should return true and call setMidAuthUnauthenticatedState for Auth→Unauth transition", () => {
+            const spy = jest.spyOn(facadeChatSDK as any, "setMidAuthUnauthenticatedState").mockImplementation(() => {});
+
+            const result = facadeChatSDK["handlePendingUnauthenticatedState"](true);
+
+            expect(result).toBe(true);
+            expect(spy).toHaveBeenCalled();
+        });
+
+        it("should return false and set isAuthenticated=false for Unauth→Unauth transition", () => {
+            facadeChatSDK["isAuthenticated"] = true;
+
+            const result = facadeChatSDK["handlePendingUnauthenticatedState"](false);
+
+            expect(result).toBe(false);
+            expect(facadeChatSDK["isAuthenticated"]).toBe(false);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            expect((facadeChatSDK["chatSDK"] as any).authenticatedUserToken).toBeNull();
+        });
+    });
+
+    describe("handleAuthenticatedState", () => {
+        it("should set authenticatedUserToken on SDK and deferInitialAuth=false for new chat", () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+
+            facadeChatSDK["handleAuthenticatedState"](false, false);
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.authenticatedUserToken).toBe(jwt.token);
+            expect(sdk.deferInitialAuth).toBe(false);
+        });
+
+        it("should set deferInitialAuth=true for reconnect to unauthenticated session", () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+
+            facadeChatSDK["handleAuthenticatedState"](true, false);
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.authenticatedUserToken).toBe(jwt.token);
+            // Reconnect to unauth session needs migration, so defer
+            expect(sdk.deferInitialAuth).toBe(true);
+        });
+
+        it("should set deferInitialAuth=false for reconnect to authenticated session", () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+
+            facadeChatSDK["handleAuthenticatedState"](true, true);
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sdk = facadeChatSDK["chatSDK"] as any;
+            expect(sdk.authenticatedUserToken).toBe(jwt.token);
+            // Reconnect to auth session: SDK handles auth internally
+            expect(sdk.deferInitialAuth).toBe(false);
+        });
+    });
+
+    describe("migrateConversationToAuthenticated", () => {
+        it("should call chatSDK.authenticateChat with token and refreshChatToken=true", async () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            const mockAuthenticateChat = jest.fn().mockResolvedValue(undefined);
+            facadeChatSDK["chatSDK"].authenticateChat = mockAuthenticateChat;
+
+            await facadeChatSDK["migrateConversationToAuthenticated"](true);
+
+            expect(mockAuthenticateChat).toHaveBeenCalledWith(jwt.token, { refreshChatToken: true });
+            expect(facadeChatSDK["isAuthenticated"]).toBe(true);
+        });
+
+        it("should not throw when authenticateChat fails (non-fatal)", async () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            const mockAuthenticateChat = jest.fn().mockRejectedValue(new Error("Migration failed"));
+            facadeChatSDK["chatSDK"].authenticateChat = mockAuthenticateChat;
+
+            // Should not throw - migration errors are non-fatal
+            await expect(facadeChatSDK["migrateConversationToAuthenticated"](true)).resolves.toBeUndefined();
+        });
+    });
+
+    describe("startChat broadcast logic", () => {
+        let mockStartChat: jest.Mock;
+
+        beforeEach(() => {
+            jest.clearAllMocks();
+            facadeChatSDK["chatConfig"] = {
+                LiveWSAndLiveChatEngJoin: {
+                    msdyn_authenticatedsigninoptional: "true"
+                }
+            } as unknown;
+            mockStartChat = jest.fn().mockResolvedValue(undefined);
+            facadeChatSDK["chatSDK"].startChat = mockStartChat;
+            jest.spyOn(facadeChatSDK, "tokenRing").mockResolvedValue({ result: true, message: "Token is valid" });
+        });
+
+        it("should broadcast MidConversationAuthSucceeded for new authenticated chat", async () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            facadeChatSDK["expiration"] = jwt.expiration;
+            facadeChatSDK["isAuthenticated"] = true;
+
+            await facadeChatSDK.startChat({});
+
+            expect(BroadcastService.postMessage).toHaveBeenCalledWith({
+                eventName: BroadcastEvent.MidConversationAuthSucceeded,
+                payload: {
+                    isAuthenticated: true,
+                    isStartChatComplete: true,
+                    isReconnect: false
+                }
+            });
+        });
+
+        it("should broadcast MidConversationAuthReset for new unauthenticated chat", async () => {
+            facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
+            facadeChatSDK["token"] = "";
+            facadeChatSDK["isAuthenticated"] = false;
+
+            await facadeChatSDK.startChat({});
+
+            expect(BroadcastService.postMessage).toHaveBeenCalledWith({
+                eventName: BroadcastEvent.MidConversationAuthReset,
+                payload: {
+                    isAuthenticated: false,
+                    isStartChatComplete: true,
+                    isReconnect: false
+                }
+            });
+        });
+
+        it("should skip broadcast on reconnect when auth state unchanged", async () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            facadeChatSDK["expiration"] = jwt.expiration;
+            facadeChatSDK["isAuthenticated"] = true;
+
+            jest.clearAllMocks();
+            mockStartChat = jest.fn().mockResolvedValue(undefined);
+            facadeChatSDK["chatSDK"].startChat = mockStartChat;
+            jest.spyOn(facadeChatSDK, "tokenRing").mockResolvedValue({ result: true, message: "Token is valid" });
+
+            // Reconnect to authenticated session (auth state unchanged: true→true)
+            await facadeChatSDK.startChat({ liveChatContext: { chatToken: {} }, wasAuthenticated: true } as any);
+
+            // Should NOT broadcast since auth state didn't change
+            expect(BroadcastService.postMessage).not.toHaveBeenCalledWith(
+                expect.objectContaining({
+                    eventName: BroadcastEvent.MidConversationAuthSucceeded,
+                    payload: expect.objectContaining({ isStartChatComplete: true })
+                })
+            );
+        });
+
+        it("should trigger migrateConversationToAuthenticated for reconnect to unauthenticated session with valid token", async () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            facadeChatSDK["expiration"] = jwt.expiration;
+            facadeChatSDK["isAuthenticated"] = true;
+
+            const mockAuthenticateChat = jest.fn().mockResolvedValue(undefined);
+            facadeChatSDK["chatSDK"].authenticateChat = mockAuthenticateChat;
+
+            // Reconnect to unauthenticated session (wasAuthenticated=false) with valid token
+            await facadeChatSDK.startChat({ liveChatContext: { chatToken: {} }, wasAuthenticated: false } as any);
+
+            // Should call authenticateChat to migrate to authenticated
+            expect(mockAuthenticateChat).toHaveBeenCalledWith(jwt.token, { refreshChatToken: true });
+        });
+
+        it("should NOT trigger migrateConversationToAuthenticated for new chat", async () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            facadeChatSDK["expiration"] = jwt.expiration;
+            facadeChatSDK["isAuthenticated"] = true;
+
+            const mockAuthenticateChat = jest.fn();
+            facadeChatSDK["chatSDK"].authenticateChat = mockAuthenticateChat;
+
+            // New chat (no liveChatContext, no reconnectId)
+            await facadeChatSDK.startChat({});
+
+            // Should NOT call authenticateChat for new chats
+            expect(mockAuthenticateChat).not.toHaveBeenCalled();
+        });
+    });
+
+    describe("destroy with mid-auth", () => {
+        it("should reset pendingMidAuthUnauthenticatedState and deferInitialAuth when mid-auth is enabled", () => {
+            facadeChatSDK["chatConfig"] = {
+                LiveWSAndLiveChatEngJoin: {
+                    msdyn_authenticatedsigninoptional: "true"
+                }
+            } as unknown;
+            facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (facadeChatSDK["chatSDK"] as any).deferInitialAuth = true;
+
+            facadeChatSDK.destroy();
+
+            expect(facadeChatSDK["pendingMidAuthUnauthenticatedState"]).toBe(false);
+            expect(facadeChatSDK["isAuthenticated"]).toBe(true);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            expect((facadeChatSDK["chatSDK"] as any).deferInitialAuth).toBe(false);
+        });
+
+        it("should NOT reset mid-auth state when mid-auth is disabled", () => {
+            facadeChatSDK["chatConfig"] = {
+                LiveWSAndLiveChatEngJoin: {
+                    msdyn_authenticatedsigninoptional: "false"
+                }
+            } as unknown;
+            facadeChatSDK["pendingMidAuthUnauthenticatedState"] = true;
+            facadeChatSDK["isAuthenticated"] = false;
+
+            facadeChatSDK.destroy();
+
+            // pendingMidAuthUnauthenticatedState should remain unchanged when mid-auth is disabled
+            expect(facadeChatSDK["pendingMidAuthUnauthenticatedState"]).toBe(true);
+            expect(facadeChatSDK["isAuthenticated"]).toBe(false);
+        });
+
+        it("should always clear token and expiration regardless of mid-auth", () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            facadeChatSDK["expiration"] = jwt.expiration;
+
+            facadeChatSDK.destroy();
+
+            expect(facadeChatSDK["token"]).toBeNull();
+            expect(facadeChatSDK["expiration"]).toBe(0);
+        });
+    });
+
+    describe("clearAuthState", () => {
+        it("should clear all auth-related state", () => {
+            const jwt = getJWTToken();
+            facadeChatSDK["token"] = jwt.token;
+            facadeChatSDK["expiration"] = jwt.expiration;
+            facadeChatSDK["isAuthenticated"] = true;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (facadeChatSDK["chatSDK"] as any).authenticatedUserToken = jwt.token;
+
+            facadeChatSDK["clearAuthState"]();
+
+            expect(facadeChatSDK["token"]).toBe("");
+            expect(facadeChatSDK["expiration"]).toBe(0);
+            expect(facadeChatSDK["isAuthenticated"]).toBe(false);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            expect((facadeChatSDK["chatSDK"] as any).authenticatedUserToken).toBeNull();
+        });
+    });
+
 });
