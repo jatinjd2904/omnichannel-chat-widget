@@ -810,68 +810,6 @@ export const LiveChatWidgetStateful = (props: ILiveChatWidgetProps) => {
         }
     }, [state.appStates.chatDisconnectEventReceived]);
 
-    // Add near other window/BroadcastService listeners:
-    useEffect(() => {
-        console.info("[LCW][LiveChatWidgetStateful] Registering MidConversationAuthTokenReceived listener");
-        
-        const sub = BroadcastService.getMessageByEventName(BroadcastEvent.MidConversationAuthTokenReceived).subscribe(async (msg: ICustomEvent) => {
-            const { token, midAuth } = msg?.payload || {};
-            console.info("[LCW][LiveChatWidgetStateful][MidConversationAuthTokenReceived] Event received", { 
-                midAuth, 
-                tokenPresent: !!token,
-                tokenLength: token?.length || 0,
-                hasFacadeChatSDK: !!facadeChatSDK,
-                hasAuthenticateChat: !!facadeChatSDK?.authenticateChat
-            });
-            
-            if (!midAuth || !token) {
-                console.info("[LCW][LiveChatWidgetStateful][MidConversationAuthTokenReceived] Skipping - missing midAuth flag or token", {
-                    midAuth,
-                    hasToken: !!token
-                });
-                return;
-            }
-
-            TelemetryHelper.logActionEvent(LogLevel.INFO, {
-                Event: TelemetryEvent.MidConversationAuthTokenReceived,
-                Description: "Mid-conversation auth token received via broadcast event."
-            });
-            
-            try {
-                console.info("[LCW][LiveChatWidgetStateful][MidConversationAuthTokenReceived] Calling facadeChatSDK.authenticateChat...");
-                
-                await facadeChatSDK.authenticateChat(token, { refreshChatToken: true });
-
-                console.info("[LCW][LiveChatWidgetStateful][MidConversationAuthTokenReceived] authenticateChat succeeded");
-                
-                // Note: FacadeChatSDK.authenticateChat() broadcasts MidConversationAuthenticationSucceeded
-                // which is handled by the listener below to persist isAuthenticatedMidConversation state
-            } catch (err) {
-                TelemetryHelper.logActionEvent(LogLevel.ERROR, {
-                    Event: TelemetryEvent.MidConversationAuthFailed,
-                    Description: "Mid-conversation authentication failed in widget listener.",
-                    ExceptionDetails: { message: (err as Error)?.message }
-                });
-                console.error("[LCW][LiveChatWidgetStateful][MidConversationAuthTokenReceived] authenticateChat FAILED", { 
-                    error: (err as Error)?.message,
-                    errorName: (err as Error)?.name
-                });
-
-                BroadcastService.postMessage({
-                    eventName: BroadcastEvent.OnWidgetError,
-                    payload: {
-                        errorMessage: `Mid-conversation authentication failed: ${(err as Error)?.message}`
-                    }
-                });
-            }
-        });
-
-        return () => {
-            console.info("[LCW][LiveChatWidgetStateful] Unsubscribing MidConversationAuthTokenReceived listener");
-            sub.unsubscribe();
-        };
-    }, [facadeChatSDK]);
-
     // Listen for authentication success (for logging/notification)
     // This is broadcast by FacadeChatSDK.authenticateChat() and FacadeChatSDK.startChat() when auth succeeds
     useEffect(() => {
